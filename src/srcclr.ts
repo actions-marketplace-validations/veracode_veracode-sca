@@ -7,7 +7,7 @@ import { SCA_OUTPUT_FILE, run, runText } from "./index";
 import * as github from '@actions/github'
 import { env } from "process";
 import { writeFile } from 'fs';
-import { readFileSync } from 'fs';
+import { readFileSync, existsSync } from 'fs';
 import { writeFileSync } from 'fs';
 
 const runnerOS = process.env.RUNNER_OS;
@@ -19,6 +19,48 @@ const cleanCollectors = (inputArr: Array<string>) => {
         }
     }
     return allowed;
+}
+
+/**
+ * Extracts the scan URL from the Veracode SCA output
+ * Looks for a line containing "Full Report Details" followed by a URL
+ * Also tries to extract from JSON metadata if available
+ */
+const extractScanUrl = (output: string): string | null => {
+    if (!output) {
+        return null;
+    }
+    
+    // Pattern to match: "Full Report Details" followed by whitespace and a URL
+    // The URL pattern matches https://sca.analysiscenter.veracode.com/...
+    const pattern = /Full\s+Report\s+Details\s+(\S+)/i;
+    const match = output.match(pattern);
+    
+    if (match && match[1]) {
+        const url = match[1].trim();
+        // Validate it's a URL
+        if (url.startsWith('http://') || url.startsWith('https://')) {
+            return url;
+        }
+    }
+    
+    // Fallback: Try to extract from JSON if available
+    try {
+        if (existsSync(SCA_OUTPUT_FILE)) {
+            const scaResultsTxt = readFileSync(SCA_OUTPUT_FILE);
+            const scaResJson = JSON.parse(scaResultsTxt.toString('utf-8'));
+            if (scaResJson.records && scaResJson.records[0] && scaResJson.records[0].metadata && scaResJson.records[0].metadata.report) {
+                const url = scaResJson.records[0].metadata.report;
+                if (url.startsWith('http://') || url.startsWith('https://')) {
+                    return url;
+                }
+            }
+        }
+    } catch (error) {
+        // Ignore JSON parsing errors, fall back to null
+    }
+    
+    return null;
 }
 
 export async function runAction(options: Options) {
@@ -62,12 +104,28 @@ export async function runAction(options: Options) {
                     if (core.isDebug()) {
                         core.info(output);
                     }
+                    
+                    // Extract and set scan URL output
+                    const scanUrl = extractScanUrl(output);
+                    if (scanUrl) {
+                        core.setOutput('scan-url', scanUrl);
+                        core.info(`Scan URL extracted: ${scanUrl}`);
+                    } else {
+                        core.info('Scan URL not found in output');
+                    }
                 }
                 catch (error: any) {
                     if (error.status != null && error.status > 0 && (options.breakBuildOnPolicyFindings == 'true')) {
                         let summary_info = "Veraocde SCA Scan failed with exit code " + error.statuscode + "\n"
                         core.info(output)
                         core.setFailed(summary_info)
+                    }
+                    
+                    // Try to extract URL even if there was an error
+                    const scanUrl = extractScanUrl(output);
+                    if (scanUrl) {
+                        core.setOutput('scan-url', scanUrl);
+                        core.info(`Scan URL extracted: ${scanUrl}`);
                     }
                 }
 
@@ -143,11 +201,27 @@ export async function runAction(options: Options) {
                 try {
                     output = execSync(powershellCommand, { encoding: 'utf-8', maxBuffer: 1024 * 1024 * 10 });//10MB
                     core.info(output);
+                    
+                    // Extract and set scan URL output
+                    const scanUrl = extractScanUrl(output);
+                    if (scanUrl) {
+                        core.setOutput('scan-url', scanUrl);
+                        core.info(`Scan URL extracted: ${scanUrl}`);
+                    } else {
+                        core.info('Scan URL not found in output');
+                    }
                 }
                 catch (error: any) {
                     if (error.status != null && error.status > 0 && (options.breakBuildOnPolicyFindings == 'true')) {
                         let summary_info = "Veraocde SCA Scan failed with exit code " + error.statuscode + "\n"
                         core.setFailed(summary_info)
+                    }
+                    
+                    // Try to extract URL even if there was an error
+                    const scanUrl = extractScanUrl(output);
+                    if (scanUrl) {
+                        core.setOutput('scan-url', scanUrl);
+                        core.info(`Scan URL extracted: ${scanUrl}`);
                     }
                 }
 
@@ -275,6 +349,15 @@ export async function runAction(options: Options) {
                         core.info(output);
                     }
 
+                    // Extract and set scan URL output
+                    const scanUrl = extractScanUrl(output);
+                    if (scanUrl) {
+                        core.setOutput('scan-url', scanUrl);
+                        core.info(`Scan URL extracted: ${scanUrl}`);
+                    } else {
+                        core.info('Scan URL not found in output');
+                    }
+
                     //Pull request decoration
                     core.info('check if we run on a pull request')
                     let pullRequest = process.env.GITHUB_REF
@@ -375,6 +458,15 @@ export async function runAction(options: Options) {
                     core.info(`Scan finished with exit code:  ${code}`);
 
                     core.info(output)
+                    
+                    // Extract and set scan URL output
+                    const scanUrl = extractScanUrl(output);
+                    if (scanUrl) {
+                        core.setOutput('scan-url', scanUrl);
+                        core.info(`Scan URL extracted: ${scanUrl}`);
+                    } else {
+                        core.info('Scan URL not found in output');
+                    }
                     //write output to file
                     // writeFile('scaResults.txt', output, (err) => {
                     //     if (err) throw err;
