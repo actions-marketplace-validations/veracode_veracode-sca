@@ -28,20 +28,38 @@ const cleanCollectors = (inputArr: Array<string>) => {
  */
 const extractScanUrl = (output: string): string | null => {
     if (!output) {
+        if (core.isDebug()) {
+            core.info('extractScanUrl: output is empty or null');
+        }
         return null;
     }
     
     // Pattern to match: "Full Report Details" followed by whitespace and a URL
-    // The URL pattern matches https://sca.analysiscenter.veracode.com/...
-    const pattern = /Full\s+Report\s+Details\s+(\S+)/i;
-    const match = output.match(pattern);
+    // More flexible pattern that handles various whitespace amounts
+    // Matches: "Full Report Details" followed by any whitespace and then a URL starting with http:// or https://
+    const patterns = [
+        /Full\s+Report\s+Details\s+(https?:\/\/[^\s\r\n]+)/i,  // Explicit URL pattern - most common
+        /Full\s+Report\s+Details[:\s]+(https?:\/\/[^\s\r\n]+)/i,  // With optional colon
+        /Full\s+Report\s+Details\s+(\S+)/i,  // Fallback to any non-whitespace
+        /Full\s+Report\s+Details[:\s]+(https?:\/\/[^\r\n]+)/i,  // Handle newlines
+    ];
     
-    if (match && match[1]) {
-        const url = match[1].trim();
-        // Validate it's a URL
-        if (url.startsWith('http://') || url.startsWith('https://')) {
-            return url;
+    for (const pattern of patterns) {
+        const match = output.match(pattern);
+        if (match && match[1]) {
+            const url = match[1].trim();
+            // Validate it's a URL
+            if (url.startsWith('http://') || url.startsWith('https://')) {
+                if (core.isDebug()) {
+                    core.info(`extractScanUrl: Found URL using pattern: ${url}`);
+                }
+                return url;
+            }
         }
+    }
+    
+    if (core.isDebug()) {
+        core.info('extractScanUrl: No URL found in text output, trying JSON fallback');
     }
     
     // Fallback: Try to extract from JSON if available
@@ -52,12 +70,21 @@ const extractScanUrl = (output: string): string | null => {
             if (scaResJson.records && scaResJson.records[0] && scaResJson.records[0].metadata && scaResJson.records[0].metadata.report) {
                 const url = scaResJson.records[0].metadata.report;
                 if (url.startsWith('http://') || url.startsWith('https://')) {
+                    if (core.isDebug()) {
+                        core.info(`extractScanUrl: Found URL in JSON metadata: ${url}`);
+                    }
                     return url;
                 }
             }
         }
     } catch (error) {
-        // Ignore JSON parsing errors, fall back to null
+        if (core.isDebug()) {
+            core.info(`extractScanUrl: Error reading JSON fallback: ${error}`);
+        }
+    }
+    
+    if (core.isDebug()) {
+        core.info('extractScanUrl: No URL found in output or JSON');
     }
     
     return null;
@@ -198,8 +225,14 @@ export async function runAction(options: Options) {
             } else {
                 core.info('Command to run: ' + powershellCommand)
                 let output: string = ''
+                let stderrOutput: string = ''
                 try {
-                    output = execSync(powershellCommand, { encoding: 'utf-8', maxBuffer: 1024 * 1024 * 10 });//10MB
+                    // execSync captures both stdout and stderr by default, but let's be explicit
+                    output = execSync(powershellCommand, { 
+                        encoding: 'utf-8', 
+                        maxBuffer: 1024 * 1024 * 10,
+                        stdio: ['pipe', 'pipe', 'pipe'] // stdin, stdout, stderr
+                    });//10MB
                     core.info(output);
                     
                     // Extract and set scan URL output
@@ -209,19 +242,38 @@ export async function runAction(options: Options) {
                         core.info(`Scan URL extracted: ${scanUrl}`);
                     } else {
                         core.info('Scan URL not found in output');
+                        if (core.isDebug()) {
+                            // Try to find the line with "Full Report Details" for debugging
+                            const lines = output.split('\n');
+                            const fullReportLine = lines.find(line => line.toLowerCase().includes('full report details'));
+                            if (fullReportLine) {
+                                core.info(`Found "Full Report Details" line: ${fullReportLine}`);
+                            }
+                        }
                     }
                 }
                 catch (error: any) {
+                    // execSync throws on non-zero exit, but output might still be in error.stdout or error.stderr
+                    if (error.stdout) {
+                        output = error.stdout.toString();
+                    }
+                    if (error.stderr) {
+                        stderrOutput = error.stderr.toString();
+                    }
+                    
                     if (error.status != null && error.status > 0 && (options.breakBuildOnPolicyFindings == 'true')) {
                         let summary_info = "Veraocde SCA Scan failed with exit code " + error.statuscode + "\n"
                         core.setFailed(summary_info)
                     }
                     
-                    // Try to extract URL even if there was an error
-                    const scanUrl = extractScanUrl(output);
+                    // Try to extract URL from combined output even if there was an error
+                    const combinedOutput = `${output}${stderrOutput}`;
+                    const scanUrl = extractScanUrl(combinedOutput);
                     if (scanUrl) {
                         core.setOutput('scan-url', scanUrl);
-                        core.info(`Scan URL extracted: ${scanUrl}`);
+                        core.info(`Scan URL extracted from error output: ${scanUrl}`);
+                    } else if (core.isDebug()) {
+                        core.info(`Could not extract URL. Output length: ${output.length}, stderr length: ${stderrOutput.length}`);
                     }
                 }
 
@@ -335,12 +387,15 @@ export async function runAction(options: Options) {
                 })
 
                 let output: string = '';
+                let stderrOutput: string = '';
                 execution.stdout!.on('data', (data) => {
                     output = `${output}${data}`;
                 });
 
                 execution.stderr!.on('data', (data) => {
-                    core.error(`stderr: ${data}`);
+                    const dataStr = data.toString();
+                    stderrOutput = `${stderrOutput}${dataStr}`;
+                    core.error(`stderr: ${dataStr}`);
                 });
 
                 execution.on('close', async (code) => {
@@ -349,13 +404,19 @@ export async function runAction(options: Options) {
                         core.info(output);
                     }
 
-                    // Extract and set scan URL output
-                    const scanUrl = extractScanUrl(output);
+                    // Combine stdout and stderr for URL extraction (URL might be in either)
+                    const combinedOutput = `${output}${stderrOutput}`;
+
+                    // Extract and set scan URL output from combined output
+                    const scanUrl = extractScanUrl(combinedOutput);
                     if (scanUrl) {
                         core.setOutput('scan-url', scanUrl);
                         core.info(`Scan URL extracted: ${scanUrl}`);
                     } else {
                         core.info('Scan URL not found in output');
+                        if (core.isDebug()) {
+                            core.info(`Output length: ${output.length}, stderr length: ${stderrOutput.length}`);
+                        }
                     }
 
                     //Pull request decoration
@@ -445,27 +506,40 @@ export async function runAction(options: Options) {
                 })
 
                 let output: string = '';
+                let stderrOutput: string = '';
                 execution.stdout!.on('data', (data) => {
-                    output = `${output}${data}`;
+                    const dataStr = data.toString();
+                    output = `${output}${dataStr}`;
+                    // Also log to see output in real-time
+                    core.info(dataStr);
                 });
 
                 execution.stderr!.on('data', (data) => {
-                    core.error(`stderr: ${data}`);
+                    const dataStr = data.toString();
+                    stderrOutput = `${stderrOutput}${dataStr}`;
+                    core.error(`stderr: ${dataStr}`);
                 });
 
                 execution.on('close', async (code) => {
                     //core.info(output);
                     core.info(`Scan finished with exit code:  ${code}`);
 
-                    core.info(output)
+                    // Combine stdout and stderr for URL extraction (URL might be in either)
+                    const combinedOutput = `${output}${stderrOutput}`;
                     
-                    // Extract and set scan URL output
-                    const scanUrl = extractScanUrl(output);
+                    // Extract and set scan URL output from combined output
+                    const scanUrl = extractScanUrl(combinedOutput);
                     if (scanUrl) {
                         core.setOutput('scan-url', scanUrl);
                         core.info(`Scan URL extracted: ${scanUrl}`);
                     } else {
                         core.info('Scan URL not found in output');
+                        if (core.isDebug()) {
+                            core.info(`Output length: ${output.length}, stderr length: ${stderrOutput.length}`);
+                            // Log a sample of the output to help debug
+                            const sampleOutput = combinedOutput.substring(Math.max(0, combinedOutput.indexOf('Full Report') - 50), Math.min(combinedOutput.length, combinedOutput.indexOf('Full Report') + 200));
+                            core.info(`Sample output around "Full Report": ${sampleOutput}`);
+                        }
                     }
                     //write output to file
                     // writeFile('scaResults.txt', output, (err) => {
@@ -474,20 +548,36 @@ export async function runAction(options: Options) {
                     // });
 
                     try {
-                        writeFileSync('scaResults.txt', output);
+                        writeFileSync('scaResults.txt', combinedOutput);
                         console.log('The file has been saved!');
                     } catch (err) {
                         console.error('Error writing file:', err);
                     }
 
+                    // Try to extract URL from the file as well (in case output variable missed something)
+                    let fileOutput = combinedOutput;
+                    try {
+                        if (existsSync('scaResults.txt')) {
+                            const fileContent = readFileSync('scaResults.txt', 'utf8');
+                            if (fileContent && fileContent.length > combinedOutput.length) {
+                                fileOutput = fileContent;
+                                if (core.isDebug()) {
+                                    core.info('Using file content for URL extraction (file is larger than captured output)');
+                                }
+                            }
+                        }
+                    } catch (err) {
+                        // Ignore file read errors
+                    }
 
-                    // core.info('reading file')
-                    // try {
-                    //     const data = readFileSync('scaResults.txt', 'utf8');
-                    //     console.log('Full file output: '+data);
-                    // } catch (err) {
-                    //     console.error(err);
-                    // }
+                    // Re-extract URL from file output if not found in combined output
+                    if (!scanUrl) {
+                        const scanUrlFromFile = extractScanUrl(fileOutput);
+                        if (scanUrlFromFile) {
+                            core.setOutput('scan-url', scanUrlFromFile);
+                            core.info(`Scan URL extracted from file: ${scanUrlFromFile}`);
+                        }
+                    }
 
                     //store output files as artifacts
                     core.info('Store txt Results as Artifact')
