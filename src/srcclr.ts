@@ -249,20 +249,22 @@ export async function runAction(options: Options) {
                     });//10MB
                     core.info(output);
                     
+                    core.info(`Attempting to extract scan URL from output (length: ${output.length} chars)`);
+                    
                     // Extract and set scan URL output
                     const scanUrl = extractScanUrl(output);
                     if (scanUrl) {
                         core.setOutput('scan-url', scanUrl);
-                        core.info(`Scan URL extracted: ${scanUrl}`);
+                        core.info(`✓✓✓ SUCCESS: Scan URL extracted and set as output: ${scanUrl}`);
                     } else {
-                        core.info('Scan URL not found in output');
-                        if (core.isDebug()) {
-                            // Try to find the line with "Full Report Details" for debugging
-                            const lines = output.split('\n');
-                            const fullReportLine = lines.find(line => line.toLowerCase().includes('full report details'));
-                            if (fullReportLine) {
-                                core.info(`Found "Full Report Details" line: ${fullReportLine}`);
-                            }
+                        core.warning('✗✗✗ FAILED: Scan URL not found in output');
+                        // Try to find the line with "Full Report Details" for debugging
+                        const lines = output.split('\n');
+                        const fullReportLine = lines.find(line => line.toLowerCase().includes('full report details'));
+                        if (fullReportLine) {
+                            core.info(`Found "Full Report Details" line: ${fullReportLine}`);
+                        } else {
+                            core.info('"Full Report Details" line not found in output');
                         }
                     }
                 }
@@ -420,16 +422,23 @@ export async function runAction(options: Options) {
 
                     // Combine stdout and stderr for URL extraction (URL might be in either)
                     const combinedOutput = `${output}${stderrOutput}`;
+                    core.info(`Attempting to extract scan URL from combined output (stdout: ${output.length} chars, stderr: ${stderrOutput.length} chars)`);
 
                     // Extract and set scan URL output from combined output
                     const scanUrl = extractScanUrl(combinedOutput);
                     if (scanUrl) {
                         core.setOutput('scan-url', scanUrl);
-                        core.info(`Scan URL extracted: ${scanUrl}`);
+                        core.info(`✓✓✓ SUCCESS: Scan URL extracted and set as output: ${scanUrl}`);
                     } else {
-                        core.info('Scan URL not found in output');
-                        if (core.isDebug()) {
-                            core.info(`Output length: ${output.length}, stderr length: ${stderrOutput.length}`);
+                        core.warning('✗✗✗ FAILED: Scan URL not found in output');
+                        core.info(`Output length: ${output.length}, stderr length: ${stderrOutput.length}, combined: ${combinedOutput.length}`);
+                        // Log a sample of the output to help debug
+                        const fullReportIndex = combinedOutput.indexOf('Full Report');
+                        if (fullReportIndex >= 0) {
+                            const sampleOutput = combinedOutput.substring(Math.max(0, fullReportIndex - 50), Math.min(combinedOutput.length, fullReportIndex + 200));
+                            core.info(`Sample output around "Full Report" (index ${fullReportIndex}): ${sampleOutput}`);
+                        } else {
+                            core.info('"Full Report" text not found in combined output');
                         }
                     }
 
