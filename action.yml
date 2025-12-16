@@ -37,6 +37,10 @@ inputs:
     description: "Run the SRCCLR with the `--skip-collectors` options"
     required: false
     default: "false"
+  scan-collectors:
+    description: "Run the SRCCLR with the `--scan-collectors` options with comma separated values"
+    required: false
+    default: ""
   allow-dirty:
     description: "Run the SRCCLR with the `--allow-dirty` option"
     required: false

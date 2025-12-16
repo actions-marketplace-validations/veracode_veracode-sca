@@ -64,6 +64,11 @@ __Optional__ - run the Veracode SCA scan with the `--skip-collectors` attribute 
 The available values can be found here: [Scan directive](https://docs.veracode.com/r/c_sc_scan_directives) (scroll down to the `skip_collectors` directive).
 Default Value: __None__
 
+### `scan-collectors`
+__Optional__ - run the Veracode SCA scan with the `--scan-collectors` attribute with comma separated values.
+The available values can be found here: [Scan directive](https://docs.veracode.com/r/c_sc_scan_directives) (scroll down to the `scan_collectors` directive).
+Default Value: __None__
+
 ### `allow-dirty`
 __Optional__ - run the Veracode SCA scan with `--allow-dirty` 
 
