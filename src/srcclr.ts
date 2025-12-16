@@ -27,12 +27,14 @@ const cleanCollectors = (inputArr: Array<string>) => {
  * Also tries to extract from JSON metadata if available
  */
 const extractScanUrl = (output: string): string | null => {
+    core.info('=== Starting URL extraction ===');
+    
     if (!output) {
-        if (core.isDebug()) {
-            core.info('extractScanUrl: output is empty or null');
-        }
+        core.info('extractScanUrl: output is empty or null');
         return null;
     }
+    
+    core.info(`extractScanUrl: Output length is ${output.length} characters`);
     
     // Pattern to match: "Full Report Details" followed by whitespace and a URL
     // More flexible pattern that handles various whitespace amounts
@@ -44,48 +46,60 @@ const extractScanUrl = (output: string): string | null => {
         /Full\s+Report\s+Details[:\s]+(https?:\/\/[^\r\n]+)/i,  // Handle newlines
     ];
     
-    for (const pattern of patterns) {
+    // First, check if "Full Report Details" appears in the output at all
+    const hasFullReport = /Full\s+Report\s+Details/i.test(output);
+    core.info(`extractScanUrl: "Full Report Details" found in output: ${hasFullReport}`);
+    
+    if (hasFullReport) {
+        // Find the line containing "Full Report Details"
+        const lines = output.split('\n');
+        const fullReportLine = lines.find(line => /Full\s+Report\s+Details/i.test(line));
+        if (fullReportLine) {
+            core.info(`extractScanUrl: Found line: "${fullReportLine.trim()}"`);
+        }
+    }
+    
+    for (let i = 0; i < patterns.length; i++) {
+        const pattern = patterns[i];
         const match = output.match(pattern);
         if (match && match[1]) {
             const url = match[1].trim();
             // Validate it's a URL
             if (url.startsWith('http://') || url.startsWith('https://')) {
-                if (core.isDebug()) {
-                    core.info(`extractScanUrl: Found URL using pattern: ${url}`);
-                }
+                core.info(`extractScanUrl: ✓ Found URL using pattern ${i + 1}: ${url}`);
                 return url;
+            } else {
+                core.info(`extractScanUrl: Pattern ${i + 1} matched but result is not a URL: ${url}`);
             }
         }
     }
     
-    if (core.isDebug()) {
-        core.info('extractScanUrl: No URL found in text output, trying JSON fallback');
-    }
+    core.info('extractScanUrl: No URL found in text output, trying JSON fallback');
     
     // Fallback: Try to extract from JSON if available
     try {
         if (existsSync(SCA_OUTPUT_FILE)) {
+            core.info(`extractScanUrl: JSON file exists, attempting to read: ${SCA_OUTPUT_FILE}`);
             const scaResultsTxt = readFileSync(SCA_OUTPUT_FILE);
             const scaResJson = JSON.parse(scaResultsTxt.toString('utf-8'));
             if (scaResJson.records && scaResJson.records[0] && scaResJson.records[0].metadata && scaResJson.records[0].metadata.report) {
                 const url = scaResJson.records[0].metadata.report;
                 if (url.startsWith('http://') || url.startsWith('https://')) {
-                    if (core.isDebug()) {
-                        core.info(`extractScanUrl: Found URL in JSON metadata: ${url}`);
-                    }
+                    core.info(`extractScanUrl: ✓ Found URL in JSON metadata: ${url}`);
                     return url;
                 }
+            } else {
+                core.info('extractScanUrl: JSON file exists but does not contain report URL in expected structure');
             }
+        } else {
+            core.info(`extractScanUrl: JSON file does not exist: ${SCA_OUTPUT_FILE}`);
         }
-    } catch (error) {
-        if (core.isDebug()) {
-            core.info(`extractScanUrl: Error reading JSON fallback: ${error}`);
-        }
+    } catch (error: any) {
+        core.info(`extractScanUrl: Error reading JSON fallback: ${error.message || error}`);
     }
     
-    if (core.isDebug()) {
-        core.info('extractScanUrl: No URL found in output or JSON');
-    }
+    core.info('extractScanUrl: ✗ No URL found in output or JSON');
+    core.info('=== URL extraction complete ===');
     
     return null;
 }
@@ -526,19 +540,23 @@ export async function runAction(options: Options) {
 
                     // Combine stdout and stderr for URL extraction (URL might be in either)
                     const combinedOutput = `${output}${stderrOutput}`;
+                    core.info(`Attempting to extract scan URL from combined output (stdout: ${output.length} chars, stderr: ${stderrOutput.length} chars)`);
                     
                     // Extract and set scan URL output from combined output
                     const scanUrl = extractScanUrl(combinedOutput);
                     if (scanUrl) {
                         core.setOutput('scan-url', scanUrl);
-                        core.info(`Scan URL extracted: ${scanUrl}`);
+                        core.info(`✓✓✓ SUCCESS: Scan URL extracted and set as output: ${scanUrl}`);
                     } else {
-                        core.info('Scan URL not found in output');
-                        if (core.isDebug()) {
-                            core.info(`Output length: ${output.length}, stderr length: ${stderrOutput.length}`);
-                            // Log a sample of the output to help debug
-                            const sampleOutput = combinedOutput.substring(Math.max(0, combinedOutput.indexOf('Full Report') - 50), Math.min(combinedOutput.length, combinedOutput.indexOf('Full Report') + 200));
-                            core.info(`Sample output around "Full Report": ${sampleOutput}`);
+                        core.warning('✗✗✗ FAILED: Scan URL not found in output');
+                        core.info(`Output length: ${output.length}, stderr length: ${stderrOutput.length}, combined: ${combinedOutput.length}`);
+                        // Log a sample of the output to help debug
+                        const fullReportIndex = combinedOutput.indexOf('Full Report');
+                        if (fullReportIndex >= 0) {
+                            const sampleOutput = combinedOutput.substring(Math.max(0, fullReportIndex - 50), Math.min(combinedOutput.length, fullReportIndex + 200));
+                            core.info(`Sample output around "Full Report" (index ${fullReportIndex}): ${sampleOutput}`);
+                        } else {
+                            core.info('"Full Report" text not found in combined output');
                         }
                     }
                     //write output to file
